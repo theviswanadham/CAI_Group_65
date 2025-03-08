@@ -74,7 +74,6 @@ def handle_annual_query(query):
     if not year_data:
         return None
 
-    # Search for revenue in the captured year data
     revenue = 0
     for line in year_data:
         match = re.search(r'Revenue:\s\$([\d,]+)\s(million|billion)', line)
@@ -129,6 +128,7 @@ if user_query:
         answer, confidence = hybrid_search(user_query)
         filtered_answer = filter_hallucinations(answer, confidence)
         st.success("✅ Answer Retrieved")
+        confidence_label = "High Confidence" if confidence >= 0.5 else "Low Confidence"
         st.write("### 📜 Answer:")
         st.markdown(
             f"""
@@ -138,4 +138,4 @@ if user_query:
             """,
             unsafe_allow_html=True
         )
-        st.write(f"**🔢 Confidence Score:** `{confidence:.2f}`")
+        st.write(f"**🔢 Confidence Score:** `{confidence:.2f}` ({confidence_label})")
