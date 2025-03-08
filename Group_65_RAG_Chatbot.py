@@ -1,76 +1,141 @@
-import torch
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-from sentence_transformers import SentenceTransformer
-import faiss
-import numpy as np
-from rank_bm25 import BM25Okapi
 import streamlit as st
+from sentence_transformers import SentenceTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import re
 
-# Load small open-source models
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # ~80MB
-GENERATION_MODEL = "google/flan-t5-small"  # ~300MB
+# Load embedding model (small open-source model)
+embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
-# Load models
-embedding_model = SentenceTransformer(EMBEDDING_MODEL)
-tokenizer = AutoTokenizer.from_pretrained(GENERATION_MODEL)
-generation_model = AutoModelForSeq2SeqLM.from_pretrained(GENERATION_MODEL)
+# Always use default financial data from financial_data.txt
 
-# Load financial data
-with open("financial_data.txt", "r") as file:
-    financial_data = file.read()
+FINANCIAL_DATA_FILE = 'financial_data.txt'
 
-# Preprocess data into chunks
-chunks = [chunk.strip() for chunk in financial_data.split("\n\n") if chunk.strip()]
+# Function to read financial data from file
+def get_financial_data():
+    with open(FINANCIAL_DATA_FILE, 'r') as file:
+        return file.read().splitlines()
 
-# Embed chunks
-chunk_embeddings = embedding_model.encode(chunks)
-dimension = chunk_embeddings.shape[1]
-index = faiss.IndexFlatL2(dimension)
-index.add(chunk_embeddings)
+# Preprocess data into optimized chunks
+financial_data = get_financial_data()
+chunk_size = 10
+chunks = []
+for i in range(0, len(financial_data), chunk_size):
+    chunk = ' '.join(financial_data[i:i+chunk_size])
+    chunks.append(chunk)
 
-# BM25 for hybrid search
-tokenized_corpus = [chunk.split() for chunk in chunks]
-bm25 = BM25Okapi(tokenized_corpus)
+# Embed chunks for dense retrieval
+embeddings = embedding_model.encode(chunks)
 
-def hybrid_search(query, top_k=3):
+# Ensure embeddings have correct dimensions (2D)
+if len(embeddings.shape) == 3:
+    embeddings = embeddings.squeeze(axis=1)
+
+# Sparse retrieval using TF-IDF
+vectorizer = TfidfVectorizer()
+tfidf_matrix = vectorizer.fit_transform(chunks)
+
+# Input-side guardrail to filter irrelevant questions
+def is_financial_question(query):
+    pattern = r'\b(revenue|income|profit|loss|assets|liabilities|balance sheet|cash flow|earnings|equity|debt)\b'
+    return bool(re.search(pattern, query, re.IGNORECASE))
+
+# Extract the most relevant line ONLY (precise answer)
+def extract_relevant_line(chunk, query):
+    pattern = re.compile(r'(Revenue|Net Income|Total Assets|Total Liabilities):\s\$([\d,]+)\s(million|billion)', re.IGNORECASE)
+    matches = pattern.findall(chunk)
+
+    extracted_info = []
+    for match in matches:
+        extracted_info.append(f"{match[0]}: ${match[1]} {match[2]}")
+
+    if len(extracted_info) > 0:
+        return extracted_info[0]
+    return "No relevant data found."
+
+# Handle annual questions like "What was revenue for 2023?"
+def handle_annual_query(query):
+    year_match = re.search(r'\b(\d{4})\b', query)
+    if not year_match:
+        return None
+
+    year = year_match.group(1)
+    year_data = []
+    capture = False
+
+    for line in financial_data:
+        if f"Fiscal Year: {year}" in line:
+            capture = True
+        elif capture and line.strip() == '':
+            break
+        if capture:
+            year_data.append(line)
+
+    if not year_data:
+        return None
+
+    # Search for revenue in the captured year data
+    revenue = 0
+    for line in year_data:
+        match = re.search(r'Revenue:\s\$([\d,]+)\s(million|billion)', line)
+        if match:
+            value = int(match.group(1).replace(',', ''))
+            revenue += value
+
+    if revenue == 0:
+        return None
+
+    return f"Revenue for {year}: ${revenue:,} million"
+
+# Output-side guardrail to remove hallucinations
+def filter_hallucinations(answer, confidence):
+    threshold = 0.3
+    if confidence < threshold:
+        return "💬 I'm not confident in the answer. Please verify the financial data or rephrase your question."
+    return answer
+
+# Optimized hybrid search function
+def hybrid_search(query):
+    # Handle annual questions first
+    annual_answer = handle_annual_query(query)
+    if annual_answer:
+        return annual_answer, 1.0
+
+    # Sparse retrieval
+    query_vec = vectorizer.transform([query])
+    sparse_scores = cosine_similarity(query_vec, tfidf_matrix).flatten()
+
     # Dense retrieval
-    query_embedding = embedding_model.encode([query])
-    distances, indices = index.search(query_embedding, top_k)
-    dense_results = [chunks[i] for i in indices[0]]
+    query_embed = embedding_model.encode([query])
+    dense_scores = cosine_similarity(query_embed.reshape(1, -1), embeddings).flatten()
 
-    # Sparse retrieval (BM25)
-    tokenized_query = query.split()
-    bm25_scores = bm25.get_scores(tokenized_query)
-    bm25_indices = np.argsort(bm25_scores)[-top_k:][::-1]
-    sparse_results = [chunks[i] for i in bm25_indices]
-
-    # Combine and deduplicate results
-    combined_results = list(set(dense_results + sparse_results))
-    return combined_results[:top_k]
-
-def generate_response(query, context):
-    input_text = f"Question: {query}\nContext: {context}"
-    inputs = tokenizer(input_text, return_tensors="pt", max_length=512, truncation=True)
-    outputs = generation_model.generate(**inputs, max_length=150)
-    return tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-# Input-side guardrail
-def validate_query(query):
-    financial_keywords = ["revenue", "income", "eps", "dividend", "profit", "financial"]
-    return any(keyword in query.lower() for keyword in financial_keywords)
+    # Weighted combination of scores (60% Dense + 40% Sparse)
+    combined_scores = (0.6 * dense_scores + 0.4 * sparse_scores)
+    top_index = combined_scores.argmax()
+    relevant_line = extract_relevant_line(chunks[top_index], query)
+    return relevant_line, combined_scores[top_index]
 
 # Streamlit UI
-st.title("Financial RAG Chatbot")
-st.write("Ask financial questions about the company's earnings.")
+st.title("💸 RAG Chatbot for Financial Data")
+st.markdown("This chatbot can answer financial questions based on company financial statements.")
 
-user_query = st.text_input("Enter your question:")
+st.markdown("### 📊 Ask a Financial Question")
+user_query = st.text_input("💬 Enter your financial question below:")
 
 if user_query:
-    if not validate_query(user_query):
-        st.error("Please ask a financial-related question.")
+    if not is_financial_question(user_query):
+        st.error("❌ This question does not appear to be related to financial data. Please ask a financial question.")
     else:
-        retrieved_chunks = hybrid_search(user_query)
-        context = "\n".join(retrieved_chunks)
-        response = generate_response(user_query, context)
-        st.write("**Answer:**", response)
-        st.write("**Confidence Score:**", "High" if len(retrieved_chunks) > 0 else "Low")
+        answer, confidence = hybrid_search(user_query)
+        filtered_answer = filter_hallucinations(answer, confidence)
+        st.success("✅ Answer Retrieved")
+        st.write("### 📜 Answer:")
+        st.markdown(
+            f"""
+            <div style='background-color:#212529;color:#f8f9fa;padding:15px;border-radius:5px;font-family:monospace;'>
+                {filtered_answer}
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        st.write(f"**🔢 Confidence Score:** `{confidence:.2f}`")
