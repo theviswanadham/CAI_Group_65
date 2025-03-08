@@ -1,60 +1,76 @@
-import streamlit as st
+import torch
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from sentence_transformers import SentenceTransformer
-from rank_bm25 import BM25Okapi
+import faiss
 import numpy as np
-import re
-from transformers import pipeline
+from rank_bm25 import BM25Okapi
+import streamlit as st
+
+# Load small open-source models
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # ~80MB
+GENERATION_MODEL = "google/flan-t5-small"  # ~300MB
+
+# Load models
+embedding_model = SentenceTransformer(EMBEDDING_MODEL)
+tokenizer = AutoTokenizer.from_pretrained(GENERATION_MODEL)
+generation_model = AutoModelForSeq2SeqLM.from_pretrained(GENERATION_MODEL)
 
 # Load financial data
-with open("financial_data.txt", "r") as f:
-    financial_text = f.read()
+with open("financial_data.txt", "r") as file:
+    financial_data = file.read()
 
-# Preprocess and chunk data
-sentences = [s.strip() for s in financial_text.split("\n") if s.strip()]
-bm25 = BM25Okapi([s.split() for s in sentences])
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-embeddings = embedding_model.encode(sentences, convert_to_tensor=True)
+# Preprocess data into chunks
+chunks = [chunk.strip() for chunk in financial_data.split("\n\n") if chunk.strip()]
 
-# Load a small open-source LLM for response generation
-llm = pipeline("text-generation", model="databricks/dolly-v2-3b", trust_remote_code=True)
+# Embed chunks
+chunk_embeddings = embedding_model.encode(chunks)
+dimension = chunk_embeddings.shape[1]
+index = faiss.IndexFlatL2(dimension)
+index.add(chunk_embeddings)
+
+# BM25 for hybrid search
+tokenized_corpus = [chunk.split() for chunk in chunks]
+bm25 = BM25Okapi(tokenized_corpus)
 
 def hybrid_search(query, top_k=3):
-    # BM25 Sparse Retrieval
-    bm25_scores = bm25.get_scores(query.split())
-    bm25_top_indices = np.argsort(bm25_scores)[::-1][:top_k]
-    
-    # Dense Vector Retrieval
-    query_embedding = embedding_model.encode([query], convert_to_tensor=True)
-    dense_scores = np.inner(query_embedding, embeddings)[0]
-    dense_top_indices = np.argsort(dense_scores)[::-1][:top_k]
-    
-    # Combine results
-    final_indices = list(set(bm25_top_indices) | set(dense_top_indices))
-    retrieved_sentences = [sentences[i] for i in final_indices]
-    return "\n".join(retrieved_sentences)
+    # Dense retrieval
+    query_embedding = embedding_model.encode([query])
+    distances, indices = index.search(query_embedding, top_k)
+    dense_results = [chunks[i] for i in indices[0]]
 
-def validate_input(user_input):
-    if len(user_input) < 5:
-        return False, "Query is too short. Please provide more details."
-    if re.search(r'[^a-zA-Z0-9\s$%.,?-]', user_input):
-        return False, "Invalid characters detected. Please rephrase your question."
-    return True, ""
+    # Sparse retrieval (BM25)
+    tokenized_query = query.split()
+    bm25_scores = bm25.get_scores(tokenized_query)
+    bm25_indices = np.argsort(bm25_scores)[-top_k:][::-1]
+    sparse_results = [chunks[i] for i in bm25_indices]
 
-def generate_response(context, query):
-    prompt = f"Based on the following financial data:\n{context}\n\nAnswer the question: {query}"
-    response = llm(prompt, max_length=100, num_return_sequences=1)
-    return response[0]['generated_text']
+    # Combine and deduplicate results
+    combined_results = list(set(dense_results + sparse_results))
+    return combined_results[:top_k]
+
+def generate_response(query, context):
+    input_text = f"Question: {query}\nContext: {context}"
+    inputs = tokenizer(input_text, return_tensors="pt", max_length=512, truncation=True)
+    outputs = generation_model.generate(**inputs, max_length=150)
+    return tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+# Input-side guardrail
+def validate_query(query):
+    financial_keywords = ["revenue", "income", "eps", "dividend", "profit", "financial"]
+    return any(keyword in query.lower() for keyword in financial_keywords)
 
 # Streamlit UI
 st.title("Financial RAG Chatbot")
-query = st.text_input("Enter your financial question:")
+st.write("Ask financial questions about the company's earnings.")
 
-if query:
-    valid, message = validate_input(query)
-    if not valid:
-        st.warning(message)
+user_query = st.text_input("Enter your question:")
+
+if user_query:
+    if not validate_query(user_query):
+        st.error("Please ask a financial-related question.")
     else:
-        context = hybrid_search(query)
-        response = generate_response(context, query)
-        st.write("### Answer:")
-        st.write(response)
+        retrieved_chunks = hybrid_search(user_query)
+        context = "\n".join(retrieved_chunks)
+        response = generate_response(user_query, context)
+        st.write("**Answer:**", response)
+        st.write("**Confidence Score:**", "High" if len(retrieved_chunks) > 0 else "Low")

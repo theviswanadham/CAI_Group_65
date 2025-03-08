@@ -1,56 +1,12 @@
-TechCorp Financial Statements (2022)
+Company: TechCorp Inc.
+Year: 2022
+Revenue: $10,000,000
+Net Income: $1,200,000
+EPS: $2.50
+Dividends: $0.50 per share
 
-Revenue:
-- Q1 2022: $5.2 billion
-- Q2 2022: $5.5 billion
-- Q3 2022: $5.8 billion
-- Q4 2022: $6.1 billion
-- Total Revenue 2022: $22.6 billion
-
-Expenses:
-- Q1 2022: $3.8 billion
-- Q2 2022: $4.0 billion
-- Q3 2022: $4.2 billion
-- Q4 2022: $4.5 billion
-- Total Expenses 2022: $16.5 billion
-
-Profit:
-- Q1 2022: $1.4 billion
-- Q2 2022: $1.5 billion
-- Q3 2022: $1.6 billion
-- Q4 2022: $1.6 billion
-- Total Profit 2022: $6.1 billion
-
-Key Metrics:
-- Gross Margin 2022: 27%
-- Operating Margin 2022: 18%
-- Net Profit Margin 2022: 13%
-
-
-TechCorp Financial Statements (2023)
-
-Revenue:
-- Q1 2023: $6.0 billion
-- Q2 2023: $6.3 billion
-- Q3 2023: $6.6 billion
-- Q4 2023: $6.9 billion
-- Total Revenue 2023: $25.8 billion
-
-Expenses:
-- Q1 2023: $4.4 billion
-- Q2 2023: $4.6 billion
-- Q3 2023: $4.8 billion
-- Q4 2023: $5.0 billion
-- Total Expenses 2023: $18.8 billion
-
-Profit:
-- Q1 2023: $1.6 billion
-- Q2 2023: $1.7 billion
-- Q3 2023: $1.8 billion
-- Q4 2023: $1.9 billion
-- Total Profit 2023: $7.0 billion
-
-Key Metrics:
-- Gross Margin 2023: 28%
-- Operating Margin 2023: 19%
-- Net Profit Margin 2023: 14%
+Year: 2023
+Revenue: $12,000,000
+Net Income: $1,500,000
+EPS: $3.00
+Dividends: $0.60 per share
